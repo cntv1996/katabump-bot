@@ -2,8 +2,8 @@ name: Katabump Auto Renew
 
 on:
   schedule:
-    # 每天 UTC 0点 (北京时间 8点) 运行
-    - cron: '0 0 * * *'
+    # 每天 UTC 0点 (北京时间 8点) 运行一次，由脚本内部判断是否是“第4天”
+    - cron: '0 2 * * *'
   workflow_dispatch: # 允许手动触发
 
 jobs:
@@ -14,13 +14,42 @@ jobs:
     
     steps:
     - uses: actions/checkout@v5
-    
+
+    - name: Date Filter Check
+      id: date_check
+      run: |
+        # 设定起始锚点日期：2026-05-04
+        START_DATE="2026-05-04"
+        
+        # 获取当前日期和起始日期的时间戳（秒）
+        START_TS=$(date -d "$START_DATE" +%s)
+        CURRENT_TS=$(date -d "today" +%s)
+        
+        # 计算天数差
+        DIFF_DAYS=$(( (CURRENT_TS - START_TS) / 86400 ))
+        
+        echo "Distance from start date: $DIFF_DAYS days"
+        
+        # 判断逻辑：
+        # 1. 必须在 2026-05-04 当天或之后 (DIFF_DAYS >= 0)
+        # 2. 天数差必须是 4 的倍数 (DIFF_DAYS % 4 == 0)
+        if [ $DIFF_DAYS -ge 0 ] && [ $(( DIFF_DAYS % 4 )) -eq 0 ]; then
+          echo "Status: Match! Today is the scheduled run day."
+          echo "should_run=true" >> $GITHUB_OUTPUT
+        else
+          echo "Status: Skip. Today is not the 4th day interval."
+          echo "should_run=false" >> $GITHUB_OUTPUT
+        fi
+
     - name: Setup Node.js
+      # 仅在满足日期条件或手动触发时执行
+      if: steps.date_check.outputs.should_run == 'true' || github.event_name == 'workflow_dispatch'
       uses: actions/setup-node@v5
       with:
         node-version: '20'
         
     - name: Install Dependencies
+      if: steps.date_check.outputs.should_run == 'true' || github.event_name == 'workflow_dispatch'
       run: |
         sudo apt-get update
         sudo apt-get install -y xvfb
@@ -28,18 +57,17 @@ jobs:
         npx playwright install-deps chrome
       
     - name: Run Renew Script
+      if: steps.date_check.outputs.should_run == 'true' || github.event_name == 'workflow_dispatch'
       env:
-        # 将 USERS_JSON 配置在 GitHub Repository Secrets 中
-        # 格式: [{"username": "xxx", "password": "xxx"}, ...]
         USERS_JSON: ${{ secrets.USERS_JSON }}
         HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-      # 使用 xvfb-run 模拟有头环境运行
       run: xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" node action_renew.js
 
     - name: Upload Screenshots
-      if: always()
+      # 只有在运行了脚本且有截图产生时才尝试上传
+      if: (steps.date_check.outputs.should_run == 'true' || github.event_name == 'workflow_dispatch') && always()
       uses: actions/upload-artifact@v5
       with:
         name: screenshots
